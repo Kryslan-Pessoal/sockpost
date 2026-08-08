@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local state that must never be published
+*.db
+*.db-wal
+*.db-shm
+*.sock
+*.pid
+*.log
+
+# Optional local pattern file for tools/leak-check.sh
+.leakcheck-patterns
+*-patterns.txt
+
+# Editors and platforms
+.idea/
+.vscode/
+.DS_Store

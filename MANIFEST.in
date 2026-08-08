@@ -1,0 +1,9 @@
+include LICENSE
+include README.md
+include CHANGELOG.md
+include install.sh
+recursive-include tests *.py
+recursive-include tools *.sh
+prune .github
+global-exclude *.py[cod]
+global-exclude __pycache__
