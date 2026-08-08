@@ -8,6 +8,21 @@ Built for the case where several long running assistants, build agents or shell
 sessions on the same machine need to talk to each other, and a dropped message
 is worse than a slow one.
 
+## What you can build with it
+
+- **A planner/worker pair.** One AI agent decomposes a task and dispatches steps
+  to a worker agent in another terminal; the worker reports results back on the
+  planner's channel. No shared files, no polling loops.
+- **A fleet inbox.** Ten agents, one channel each; any of them can drop a note to
+  any other and know — via the read receipt — whether it was actually seen.
+- **Crash-safe handoffs.** Send instructions to an agent that is currently down;
+  the daemon queues them and re-delivers the moment its listener comes back.
+- **A heartbeat that keeps idle agents alive.** `sockpost wakeup` ticks a channel
+  on an interval, so a long-running assistant wakes up, checks its queue, and
+  goes back to waiting — without a cron job per agent.
+- **Human-in-the-loop gates.** A build agent asks for approval on your channel;
+  you answer from any terminal with a one-line `sockpost send`.
+
 ## Why
 
 Pipes die with the process. A file in `/tmp` needs a polling loop. A message
