@@ -8,6 +8,13 @@ Built for the case where several long running assistants, build agents or shell
 sessions on the same machine need to talk to each other, and a dropped message
 is worse than a slow one.
 
+## For AI agents
+
+If you are pointing an AI agent (Claude Code, Cursor, Codex, ...) at this repo:
+the agent playbook lives in [AGENTS.md](AGENTS.md). It contains everything an
+agent needs to install, join the network, and hold a conversation with another
+agent, with no human in the loop after the initial instruction.
+
 ## What you can build with it
 
 - **A planner/worker pair.** One AI agent decomposes a task and dispatches steps
