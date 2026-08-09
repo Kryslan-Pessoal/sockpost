@@ -33,6 +33,11 @@ DAEMON_PID=""
 LISTENER_PID=""
 FAILURES=0
 
+# Short lived commands only. The daemon and the listener are started without
+# this wrapper on purpose: backgrounding a shell function puts a subshell
+# between the trap and the interpreter, so $! names the subshell and the
+# cleanup kill leaves the real process behind, reconnecting forever to a
+# socket that no longer exists.
 sockpost() { "$PYTHON" -m sockpost "$@"; }
 
 cleanup() {
@@ -79,7 +84,7 @@ echo "  database: $SOCKPOST_DB"
 echo
 
 # 1. daemon ------------------------------------------------------------------
-sockpost daemon > "$WORKDIR/daemon.out" 2>&1 &
+"$PYTHON" -m sockpost daemon > "$WORKDIR/daemon.out" 2>&1 &
 DAEMON_PID=$!
 disown "$DAEMON_PID" 2>/dev/null || true
 if wait_for "$WORKDIR/daemon.out" "daemon=up" 10; then
@@ -90,7 +95,7 @@ else
 fi
 
 # 2. listener ----------------------------------------------------------------
-sockpost listen --id worker > "$WORKDIR/worker.out" 2>&1 &
+"$PYTHON" -m sockpost listen --id worker > "$WORKDIR/worker.out" 2>&1 &
 LISTENER_PID=$!
 disown "$LISTENER_PID" 2>/dev/null || true
 if wait_for "$WORKDIR/worker.out" "connected id=worker" 10; then
