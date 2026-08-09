@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0 - 2026-08-09
+
+### Added
+
+- `sockpost forward <id> --to <channel>`: copy a message that is already in the
+  queue to another channel, without retyping it. The copy is a new message sent
+  by the forwarder and follows the ordinary delivery, acknowledgement and
+  redelivery rules; the original is untouched.
+- Provenance on a forwarded copy, as one `key=value` line before the original
+  body: `forwarded-from=<sender> via=<forwarder> ref=<id>`, plus an optional
+  `note=` from `--note`. It travels in the body rather than in a new column, so
+  a queue written by 0.1.0 keeps working and a consumer needs no second lookup.
+- Refusals with a reason instead of a surprise: an unknown id, a destination
+  that is already the recipient of the message, a copy that would exceed
+  `SOCKPOST_MAX_BODY_BYTES`, and a forward of a forward, which is refused so a
+  relay chain between agents cannot grow one message without bound.
+- `forward` and `forwarded` on the wire protocol, and a `forwarded` record in
+  the daemon log carrying ids and sizes only, never the body.
+
+### Fixed
+
+- `AGENTS.md` contained two non-ASCII dashes, which failed the ASCII rule of
+  `tools/leak-check.sh` and therefore the publication gate.
+
 ## 0.1.0 - 2026-08-08
 
 First release.

@@ -6,5 +6,5 @@ acknowledge them. Anything not acknowledged survives restarts and is delivered
 again when the channel comes back.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["__version__"]
