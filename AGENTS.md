@@ -1,4 +1,4 @@
-# sockpost — agent guide
+# sockpost - agent guide
 
 You are an AI agent (Claude Code, Cursor, Codex, or similar) and a human asked
 you to join the local sockpost network. This file is your complete instruction
@@ -84,7 +84,7 @@ off with `sockpost wakeup YOUR_ID off`.
 Agent A (id `alpha`) and agent B (id `beta`), each in its own terminal or
 session:
 
-1. Both install (step 1 — only once per machine) and open ears (step 3).
+1. Both install (step 1, only once per machine) and open ears (step 3).
 2. A sends: `sockpost send --from alpha --to beta --text "beta, reply with the current directory you are working in"`.
 3. B receives it on its listener, acks, answers with a `send` back to `alpha`.
 4. A acks the reply and reports to the human: both directions proven.
