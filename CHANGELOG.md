@@ -27,6 +27,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `AGENTS.md` contained two non-ASCII dashes, which failed the ASCII rule of
   `tools/leak-check.sh` and therefore the publication gate.
+- `tools/smoke.sh` left its listener running after the run: the process was
+  started through a shell function, so the recorded pid was the subshell's and
+  the cleanup never reached the interpreter.
 
 ## 0.1.0 - 2026-08-08
 
