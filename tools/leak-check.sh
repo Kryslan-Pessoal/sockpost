@@ -172,10 +172,15 @@ BINARY_FLAG="-I"
 
 FINDINGS=0
 
-# How many colon separated fields make up the location at the head of a hit:
-# one for a file path, three for the "commit:<sha>:<part>" pseudo path.
+# Where the location ends and the offending text begins, in colon separated
+# fields. A file hit is "path:line:text"; a commit hit is
+# "commit:<sha>:<part>:text", with no line number to report.
 PATH_FIELDS=1
-[ -n "$COMMIT_RANGE" ] && PATH_FIELDS=3
+CONTENT_FIELD=3
+if [ -n "$COMMIT_RANGE" ]; then
+  PATH_FIELDS=3
+  CONTENT_FIELD=4
+fi
 
 report() {
   # report <rule> <grep output>
@@ -188,7 +193,7 @@ report() {
     path=$(printf '%s' "$line" | cut -d: -f"1-$PATH_FIELDS")
     # The exception regex is matched against the offending text alone, without
     # the "file:line:" prefix, so an anchored pattern means what it looks like.
-    text=$(printf '%s' "$line" | cut -d: -f"$((PATH_FIELDS + 2))-")
+    text=$(printf '%s' "$line" | cut -d: -f"$CONTENT_FIELD-")
     if allowed "$path" "$rule" "$text"; then
       continue
     fi
