@@ -278,7 +278,7 @@ def cmd_listen(settings: Settings, channel_arg, manual_ack: bool,
 
 
 # ---------------------------------------------------------------------------
-# send / ack
+# send / forward / ack
 # ---------------------------------------------------------------------------
 
 def cmd_send(settings: Settings, from_arg, to_arg, text) -> int:
@@ -307,6 +307,38 @@ def cmd_send(settings: Settings, from_arg, to_arg, text) -> int:
     if reply.get("op") == P.OP_ERROR:
         return _fail(str(reply.get("error")))
     print("queued id=%s" % reply.get("msg_id"))
+    return 0
+
+
+def cmd_forward(settings: Settings, message_id, from_arg, to_arg, note) -> int:
+    """Copy an existing message to another channel, keeping its provenance."""
+    try:
+        forwarder = _resolve_id(settings, from_arg, "--from")
+        recipient = P.validate_channel(to_arg)
+    except P.ProtocolError as exc:
+        return _fail(str(exc))
+    try:
+        source_id = int(message_id)
+    except (TypeError, ValueError):
+        return _fail("message id must be a number, got %r" % message_id)
+    payload = {"op": P.OP_FORWARD, "src_id": source_id, "from": forwarder,
+               "to": recipient}
+    if note:
+        payload["note"] = note
+    try:
+        reply = _roundtrip(settings, payload, expect=[P.OP_FORWARDED])
+    except (BrokenPipeError, ConnectionResetError):
+        return _fail("the daemon closed the connection while receiving this "
+                     "request; the note is most likely too large (see "
+                     "SOCKPOST_MAX_BODY_BYTES)")
+    except OSError:
+        return _fail(_unreachable_hint(settings))
+    if reply is None:
+        return _fail("no reply from daemon")
+    if reply.get("op") == P.OP_ERROR:
+        return _fail(str(reply.get("error")))
+    print("forwarded id=%s src=%s to=%s"
+          % (reply.get("msg_id"), reply.get("src_id"), recipient))
     return 0
 
 

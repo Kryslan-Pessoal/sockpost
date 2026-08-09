@@ -176,6 +176,18 @@ def ack_message(conn: sqlite3.Connection, message_id: int, recipient: str) -> in
     return 1
 
 
+def get_message(conn: sqlite3.Connection, message_id: int):
+    """One message by id, whatever its state, or ``None``.
+
+    Rows are never deleted, so this reaches an acknowledged or expired message
+    as well as a pending one: forwarding is about the content, not about the
+    place the message holds in a delivery loop.
+    """
+    return conn.execute(
+        "SELECT id, recipient, sender, body, created_at, state "
+        "FROM messages WHERE id=?", (message_id,)).fetchone()
+
+
 def message_status(conn: sqlite3.Connection, message_id: int):
     return conn.execute(
         "SELECT state, recipient, failure_reported_at FROM messages WHERE id=?",

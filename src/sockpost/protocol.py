@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 # Client -> daemon
 OP_CONNECT = "connect"
 OP_SEND = "send"
+OP_FORWARD = "forward"
 OP_ACK = "ack"
 OP_UNREAD = "unread"
 OP_WAKEUP_SET = "wakeup_set"
@@ -25,6 +26,7 @@ OP_PING_ACK = "ping_ack"
 # Daemon -> client
 OP_CONNECTED = "connected"
 OP_QUEUED = "queued"
+OP_FORWARDED = "forwarded"
 OP_ACK_RESULT = "ack_result"
 OP_MESSAGE = "message"
 OP_WAKEUP = "wakeup"
@@ -40,6 +42,12 @@ OP_ERROR = "error"
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 CHANNEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+# A forwarded body opens with this token. It is the same key=value vocabulary
+# the commands print, so a consumer that already splits on the first newline
+# reads the provenance without a new parser. It is also what makes a forward
+# recognisable to the daemon, which refuses to forward one again.
+FORWARD_MARK = "forwarded-from="
 
 # One year. Long enough for any heartbeat, short enough to stay a sane integer.
 MAX_INTERVAL_SECONDS = 365 * 86400
@@ -154,3 +162,46 @@ def send_line(sock: _socket.socket, obj: dict) -> None:
 def quote(text) -> str:
     """Quote a value for key=value output (escapes newlines and quotes)."""
     return json.dumps("" if text is None else str(text), ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# forwarding
+# ---------------------------------------------------------------------------
+
+def forward_header(original_sender: str, forwarder: str, source_id: int,
+                   note=None) -> str:
+    """Build the provenance line that opens a forwarded body.
+
+    ``forwarded-from=planner via=worker ref=7 note="..."``. The note is quoted
+    the same way command output is, so a note containing a newline cannot push
+    the original body up into the header.
+    """
+    header = "%s%s via=%s ref=%d" % (FORWARD_MARK, original_sender, forwarder,
+                                     int(source_id))
+    if note:
+        header += " note=%s" % quote(note)
+    return header
+
+
+def forward_body(original_sender: str, forwarder: str, source_id: int,
+                 body: str, note=None) -> str:
+    """The body of a forwarded copy: provenance line, newline, original text.
+
+    Provenance travels in the body rather than in a column because a message
+    is the only thing this protocol carries end to end: a consumer reading the
+    text sees where it came from, with no second lookup and no schema change
+    on a queue written by an older version.
+    """
+    return "%s\n%s" % (
+        forward_header(original_sender, forwarder, source_id, note),
+        "" if body is None else str(body))
+
+
+def is_forward(body) -> bool:
+    """True when a body already carries a provenance line.
+
+    Used to keep a forward terminal. This is a convention, not a guarantee: a
+    sender can type the marker by hand, in which case its message cannot be
+    forwarded. Refusing to copy is the safe side of that mistake.
+    """
+    return str(body or "").startswith(FORWARD_MARK)

@@ -497,6 +497,8 @@ class Daemon:
             await self._handle_connect(conn, channel)
         elif op == P.OP_SEND:
             await self._handle_send(conn, request)
+        elif op == P.OP_FORWARD:
+            await self._handle_forward(conn, request)
         elif op == P.OP_ACK:
             await self._handle_ack(conn, request)
         elif op == P.OP_WAKEUP_SET:
@@ -593,6 +595,10 @@ class Daemon:
         await conn.send({"op": P.OP_QUEUED, "msg_id": message_id})
         self.log.write("queued", msg_id=message_id, sender=sender,
                        recipient=recipient, bytes=size)
+        self._route(message_id, sender, recipient)
+
+    def _route(self, message_id: int, sender: str, recipient: str) -> None:
+        """Hand a freshly queued message to the delivery path."""
         if self.receivers.get(recipient):
             # Connected: the delivery loop will arm the watchdog when the
             # message actually goes out.
@@ -604,6 +610,81 @@ class Daemon:
             # and a flood of messages to channels that do not exist should not
             # leave a task behind for each invented name.
             self._arm_ack_watchdog(message_id, sender, recipient)
+
+    async def _handle_forward(self, conn: Conn, request: dict) -> None:
+        """Copy a message that is already in the queue to another channel.
+
+        The copy is a new message from the forwarder, so it follows the normal
+        delivery, acknowledgement and redelivery rules; the original is left
+        exactly as it was. Provenance is prepended to the body.
+
+        There is no ownership check. Any local process can already read the
+        whole queue with ``sockpost unread``, so refusing to forward somebody
+        else's message would cost the caller nothing and buy no secrecy. What
+        the daemon does instead is record who forwarded what, in the copy and
+        in its log.
+        """
+        try:
+            forwarder = P.validate_channel(request.get("from"))
+            recipient = P.validate_channel(request.get("to"))
+        except P.ProtocolError as exc:
+            await conn.send({"op": P.OP_ERROR, "error": str(exc)})
+            return
+        try:
+            source_id = int(request.get("src_id"))
+        except (TypeError, ValueError):
+            await conn.send({"op": P.OP_ERROR,
+                             "error": "message id must be a number, got %r"
+                                      % (request.get("src_id"),)})
+            return
+        row = await self._db(lambda c: store.get_message(c, source_id))
+        if row is None:
+            await conn.send({"op": P.OP_ERROR,
+                             "error": "no such message %d" % source_id})
+            return
+        source_recipient, source_sender, body = str(row[1]), str(row[2]), row[3]
+        if source_recipient == recipient:
+            await conn.send({"op": P.OP_ERROR, "error":
+                             "message %d is already addressed to %s; a copy "
+                             "there would carry nothing new"
+                             % (source_id, recipient)})
+            return
+        if P.is_forward(body):
+            # A forward is terminal. Without this, three agents forwarding to
+            # each other would grow one message into an unbounded chain, each
+            # copy longer than the last.
+            await conn.send({"op": P.OP_ERROR, "error":
+                             "message %d is itself a forward, and a forward "
+                             "is terminal; send the original (ref in its "
+                             "first line) if it has to travel further"
+                             % source_id})
+            return
+        note = request.get("note")
+        if note is not None and not isinstance(note, str):
+            note = str(note)
+        copy = P.forward_body(source_sender, forwarder, source_id, body, note)
+        size = len(copy.encode("utf-8"))
+        if size > self.settings.max_body_bytes:
+            # The provenance line makes the copy larger than the original, so
+            # a message that was accepted at the limit cannot be forwarded.
+            await conn.send({"op": P.OP_ERROR, "error":
+                             "the forwarded copy is %d bytes with its "
+                             "provenance line, the limit is %d (raise "
+                             "SOCKPOST_MAX_BODY_BYTES)"
+                             % (size, self.settings.max_body_bytes)})
+            return
+        try:
+            message_id = await self._db(
+                lambda c: store.insert_message(c, recipient, forwarder, copy))
+        except sqlite3.Error as exc:
+            await conn.send({"op": P.OP_ERROR,
+                             "error": "database write failed: %s" % exc})
+            return
+        await conn.send({"op": P.OP_FORWARDED, "msg_id": message_id,
+                         "src_id": source_id, "to": recipient})
+        self.log.write("forwarded", msg_id=message_id, src_id=source_id,
+                       sender=forwarder, recipient=recipient, bytes=size)
+        self._route(message_id, forwarder, recipient)
 
     async def _handle_ack(self, conn: Conn, request: dict) -> None:
         try:

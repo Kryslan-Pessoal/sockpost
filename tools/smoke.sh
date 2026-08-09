@@ -132,13 +132,38 @@ expect_contains "the recipient can acknowledge" "$OUT" "ack id=2"
 OUT="$(sockpost unread 2>&1)"
 expect_contains "queue is empty again" "$OUT" "unread n=0"
 
-# 6. status ------------------------------------------------------------------
+# 6. forwarding ---------------------------------------------------------------
+OUT="$(sockpost forward 2 --from offline-agent --to worker 2>&1)"
+expect_contains "forward returns the id of the copy" "$OUT" "forwarded id=3 src=2"
+
+if wait_for "$WORKDIR/worker.out" "message id=3" 10; then
+  pass "the copy reaches the destination channel"
+  expect_contains "the copy names the original sender" \
+    "$(cat "$WORKDIR/worker.out")" "forwarded-from=planner via=offline-agent ref=2"
+  expect_contains "the copy carries the original body" \
+    "$(cat "$WORKDIR/worker.out")" 'wait for me'
+else
+  fail "the copy reaches the destination channel" \
+    "$(cat "$WORKDIR/worker.out" 2>/dev/null)"
+fi
+
+OUT="$(sockpost forward 3 --from worker --to auditor 2>&1)"
+expect_contains "a forward cannot be forwarded again" "$OUT" "is itself a forward"
+
+OUT="$(sockpost forward 2 --from planner --to offline-agent 2>&1)"
+expect_contains "a copy to the current recipient is refused" "$OUT" \
+  "already addressed to offline-agent"
+
+OUT="$(sockpost forward 404 --from worker --to auditor 2>&1)"
+expect_contains "an unknown id is refused" "$OUT" "no such message 404"
+
+# 7. status ------------------------------------------------------------------
 OUT="$(sockpost status 2>&1)"
 expect_contains "status reports the daemon" "$OUT" "daemon=up"
 expect_contains "status reports the channel" "$OUT" "id=worker"
 expect_contains "status pings the channel" "$OUT" "pong id=worker"
 
-# 7. shutdown ----------------------------------------------------------------
+# 8. shutdown ----------------------------------------------------------------
 OUT="$(sockpost stop 2>&1)"
 expect_contains "daemon stops on request" "$OUT" "daemon=stopped"
 DAEMON_PID=""

@@ -13,6 +13,7 @@ examples:
   export SOCKPOST_ID=planner
   sockpost listen &                       # stream events for this channel
   sockpost send --to builder --text "run the build"
+  sockpost forward 7 --to auditor         # copy message 7, provenance kept
   sockpost unread                         # queued but unacknowledged messages
   sockpost status                         # who is connected, who answers
 
@@ -48,6 +49,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="recipient channel id")
     p_send.add_argument("--text", "--message", dest="text", required=True,
                         help="message body")
+
+    p_forward = sub.add_parser(
+        "forward", help="copy an existing message to another channel")
+    p_forward.add_argument("msg_id", help="id of the message to copy")
+    p_forward.add_argument("--from", dest="sender",
+                           help="channel doing the forwarding")
+    p_forward.add_argument("--to", dest="recipient", required=True,
+                           help="destination channel id")
+    p_forward.add_argument("--note", dest="note",
+                           help="one line of context for the provenance header")
 
     p_ack = sub.add_parser("ack", help="acknowledge a delivered message")
     p_ack.add_argument("msg_id", help="message id returned by send")
@@ -102,6 +113,9 @@ def main(argv=None) -> int:
                                  args.as_json)
     if args.command == "send":
         return client.cmd_send(settings, args.sender, args.recipient, args.text)
+    if args.command == "forward":
+        return client.cmd_forward(settings, args.msg_id, args.sender,
+                                  args.recipient, args.note)
     if args.command == "ack":
         return client.cmd_ack(settings, args.msg_id, args.sender)
     if args.command == "unread":
