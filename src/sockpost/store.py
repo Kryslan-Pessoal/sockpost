@@ -30,6 +30,10 @@ STATE_EXPIRED = 2
 
 SCHEMA_VERSION = 1
 
+# SQLite stores a rowid in a signed 64 bit integer. Anything outside that is
+# not a message that exists somewhere else: it is a number no row can carry.
+MAX_ROWID = 2 ** 63 - 1
+
 
 def connect(db_path: Path, readonly: bool = False) -> sqlite3.Connection:
     """Open the queue database.
@@ -182,7 +186,18 @@ def get_message(conn: sqlite3.Connection, message_id: int):
     Rows are never deleted, so this reaches an acknowledged or expired message
     as well as a pending one: forwarding is about the content, not about the
     place the message holds in a delivery loop.
+
+    An id outside the range SQLite can hold in a rowid is answered with
+    ``None`` rather than an exception. No such row can exist, so "there is no
+    such message" is the true answer, and the caller does not have to turn an
+    OverflowError into one.
     """
+    try:
+        message_id = int(message_id)
+    except (TypeError, ValueError):
+        return None
+    if not 0 < message_id <= MAX_ROWID:
+        return None
     return conn.execute(
         "SELECT id, recipient, sender, body, created_at, state "
         "FROM messages WHERE id=?", (message_id,)).fetchone()

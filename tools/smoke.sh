@@ -65,6 +65,17 @@ expect_contains() {
   esac
 }
 
+expect_status() {
+  # expect_status <label> <expected rc> <actual rc> <output> <needle>
+  # Output alone is not a result: a command that prints the right words and
+  # exits non zero is still broken, and so is the reverse.
+  if [ "$2" != "$3" ]; then
+    fail "$1" "exit $3, expected $2: $4"
+    return
+  fi
+  expect_contains "$1" "$4" "$5"
+}
+
 wait_for() {
   # wait_for <file> <needle> [seconds]
   local file="$1" needle="$2" limit="${3:-10}" waited=0
@@ -138,13 +149,16 @@ OUT="$(sockpost unread 2>&1)"
 expect_contains "queue is empty again" "$OUT" "unread n=0"
 
 # 6. forwarding ---------------------------------------------------------------
-OUT="$(sockpost forward 2 --from offline-agent --to worker 2>&1)"
-expect_contains "forward returns the id of the copy" "$OUT" "forwarded id=3 src=2"
+OUT="$(sockpost forward 2 --from offline-agent --to worker 2>&1)"; RC=$?
+expect_status "forward returns the id of the copy" 0 "$RC" "$OUT" \
+  "forwarded id=3 src=2 to=worker hops=1"
 
 if wait_for "$WORKDIR/worker.out" "message id=3" 10; then
   pass "the copy reaches the destination channel"
-  expect_contains "the copy names the original sender" \
-    "$(cat "$WORKDIR/worker.out")" "forwarded-from=planner via=offline-agent ref=2"
+  expect_contains "the copy names the original author" \
+    "$(cat "$WORKDIR/worker.out")" '#sockpost/forward v=1 hops=1'
+  expect_contains "the copy names the forwarder" \
+    "$(cat "$WORKDIR/worker.out")" 'via=\"offline-agent\" ref=2'
   expect_contains "the copy carries the original body" \
     "$(cat "$WORKDIR/worker.out")" 'wait for me'
 else
@@ -152,15 +166,32 @@ else
     "$(cat "$WORKDIR/worker.out" 2>/dev/null)"
 fi
 
-OUT="$(sockpost forward 3 --from worker --to auditor 2>&1)"
-expect_contains "a forward cannot be forwarded again" "$OUT" "is itself a forward"
+# A chain is allowed up to the ceiling, and stops there.
+OUT="$(sockpost forward 3 --from worker --to auditor 2>&1)"; RC=$?
+expect_status "a copy can travel one more hop" 0 "$RC" "$OUT" \
+  "forwarded id=4 src=3 to=auditor hops=2"
 
-OUT="$(sockpost forward 2 --from planner --to offline-agent 2>&1)"
-expect_contains "a copy to the current recipient is refused" "$OUT" \
-  "already addressed to offline-agent"
+OUT="$(sockpost forward 4 --from auditor --to archive 2>&1)"; RC=$?
+expect_status "and one more, up to the ceiling" 0 "$RC" "$OUT" \
+  "forwarded id=5 src=4 to=archive hops=3"
 
-OUT="$(sockpost forward 404 --from worker --to auditor 2>&1)"
-expect_contains "an unknown id is refused" "$OUT" "no such message 404"
+OUT="$(sockpost forward 5 --from archive --to sink 2>&1)"; RC=$?
+expect_status "the hop ceiling stops the chain" 1 "$RC" "$OUT" \
+  "already been forwarded 3 time(s)"
+
+OUT="$(sockpost send --from planner --to pending-agent --text 'on its way' 2>&1)"; RC=$?
+expect_status "a message queued for a channel that is not there" 0 "$RC" "$OUT" \
+  "queued id=6"
+
+OUT="$(sockpost forward 6 --from planner --to pending-agent 2>&1)"; RC=$?
+expect_status "a copy for a channel still waiting for it is refused" 1 "$RC" "$OUT" \
+  "is still queued for pending-agent"
+
+OUT="$(sockpost forward 404 --from worker --to auditor 2>&1)"; RC=$?
+expect_status "an unknown id is refused" 1 "$RC" "$OUT" "no such message 404"
+
+OUT="$(sockpost forward 99999999999999999999 --from worker --to auditor 2>&1)"; RC=$?
+expect_status "an id no row can hold is refused" 1 "$RC" "$OUT" "no such message"
 
 # 7. status ------------------------------------------------------------------
 OUT="$(sockpost status 2>&1)"

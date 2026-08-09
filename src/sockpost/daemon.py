@@ -616,7 +616,8 @@ class Daemon:
 
         The copy is a new message from the forwarder, so it follows the normal
         delivery, acknowledgement and redelivery rules; the original is left
-        exactly as it was. Provenance is prepended to the body.
+        exactly as it was. A control line carrying the provenance and a hop
+        count opens the body, and the hop count is what bounds a relay.
 
         There is no ownership check. Any local process can already read the
         whole queue with ``sockpost unread``, so refusing to forward somebody
@@ -642,31 +643,58 @@ class Daemon:
             await conn.send({"op": P.OP_ERROR,
                              "error": "no such message %d" % source_id})
             return
-        source_recipient, source_sender, body = str(row[1]), str(row[2]), row[3]
-        if source_recipient == recipient:
+        source_recipient, source_sender = str(row[1]), str(row[2])
+        body, created_at, state = row[3], str(row[4]), int(row[5])
+        if source_recipient == recipient and state == store.STATE_PENDING:
+            # Only while the original is still on its way: once it has been
+            # acknowledged or expired, a copy is how a channel gets a second
+            # look at something it already consumed, which is a real need.
             await conn.send({"op": P.OP_ERROR, "error":
-                             "message %d is already addressed to %s; a copy "
-                             "there would carry nothing new"
+                             "message %d is still queued for %s and will be "
+                             "delivered on its own; a copy would arrive twice"
                              % (source_id, recipient)})
             return
-        if P.is_forward(body):
-            # A forward is terminal. Without this, three agents forwarding to
-            # each other would grow one message into an unbounded chain, each
-            # copy longer than the last.
+        hops = P.forward_hops(body)
+        if hops is None:
             await conn.send({"op": P.OP_ERROR, "error":
-                             "message %d is itself a forward, and a forward "
-                             "is terminal; send the original (ref in its "
-                             "first line) if it has to travel further"
+                             "message %d opens with a provenance line whose "
+                             "hop count cannot be read, so there is no way to "
+                             "tell how far it has already travelled"
                              % source_id})
             return
+        if hops + 1 > self.settings.max_forward_hops:
+            # The ceiling is what keeps a relay from running: every copy costs
+            # a hop, so a cycle between channels stops here instead of feeding
+            # itself. It does not stop anyone from sending the same text again
+            # by hand, and it is not meant to.
+            await conn.send({"op": P.OP_ERROR, "error":
+                             "message %d has already been forwarded %d time(s) "
+                             "and the limit is %d (raise "
+                             "SOCKPOST_MAX_FORWARD_HOPS); the step before it "
+                             "is in the ref field of its first line"
+                             % (source_id, hops,
+                                self.settings.max_forward_hops)})
+            return
+        fields, text = P.split_forward(body)
+        origin = source_sender
+        if fields is not None:
+            # The first author travels along the chain, so a reader of the
+            # last copy still knows where the text started. It comes out of a
+            # body anyone could have written, so it is validated like any
+            # other channel id before it is trusted with that meaning.
+            try:
+                origin = P.validate_channel(fields.get("from"))
+            except P.ProtocolError:
+                origin = source_sender
         note = request.get("note")
         if note is not None and not isinstance(note, str):
             note = str(note)
-        copy = P.forward_body(source_sender, forwarder, source_id, body, note)
+        copy = P.forward_body(text, origin, forwarder, source_id, created_at,
+                              hops + 1, note)
         size = len(copy.encode("utf-8"))
         if size > self.settings.max_body_bytes:
-            # The provenance line makes the copy larger than the original, so
-            # a message that was accepted at the limit cannot be forwarded.
+            # The control line makes the copy larger than the original, so a
+            # message that was accepted at the limit cannot be forwarded.
             await conn.send({"op": P.OP_ERROR, "error":
                              "the forwarded copy is %d bytes with its "
                              "provenance line, the limit is %d (raise "
@@ -681,9 +709,11 @@ class Daemon:
                              "error": "database write failed: %s" % exc})
             return
         await conn.send({"op": P.OP_FORWARDED, "msg_id": message_id,
-                         "src_id": source_id, "to": recipient})
+                         "src_id": source_id, "to": recipient,
+                         "hops": hops + 1})
         self.log.write("forwarded", msg_id=message_id, src_id=source_id,
-                       sender=forwarder, recipient=recipient, bytes=size)
+                       sender=forwarder, recipient=recipient,
+                       hops=hops + 1, bytes=size)
         self._route(message_id, forwarder, recipient)
 
     async def _handle_ack(self, conn: Conn, request: dict) -> None:

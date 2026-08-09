@@ -95,6 +95,10 @@ class Settings:
 
     # Limits.
     max_body_bytes: int
+    # How many times one message may be copied onward. Small on purpose: it
+    # bounds a relay chain (an agent forwards to a supervisor, the supervisor
+    # to an archive) without letting a cycle between channels run.
+    max_forward_hops: int
 
     # Housekeeping.
     orphan_ttl: int
@@ -127,6 +131,7 @@ def load_settings() -> Settings:
         ack_timeout_online=_env_int("ACK_TIMEOUT_ONLINE", 30),
         ack_timeout_offline=_env_int("ACK_TIMEOUT_OFFLINE", 60),
         max_body_bytes=_env_int("MAX_BODY_BYTES", 1024 * 1024),
+        max_forward_hops=_env_int("MAX_FORWARD_HOPS", 3),
         orphan_ttl=_env_int("ORPHAN_TTL", 6 * 3600),
         orphan_sweep_interval=_env_int("ORPHAN_SWEEP_INTERVAL", 900),
         autostart=_env_bool("AUTOSTART", True),

@@ -1,8 +1,14 @@
 """Wire protocol helpers shared by the daemon and the client.
 
 The wire format is newline delimited JSON over a Unix domain socket. Every
-object carries an ``op`` field. Anything the peer does not understand is
-ignored, which keeps a newer client compatible with an older daemon.
+object carries an ``op`` field.
+
+Compatibility is one directional. Unknown *fields* are ignored, so a client
+may add information an older daemon will not read. Unknown *operations* are
+not: the daemon answers ``unknown op`` and the command fails. A client is
+therefore compatible with a daemon of the same version or newer, and a daemon
+started before an upgrade has to be restarted before the new commands work.
+See "Upgrading" in the README.
 """
 
 from __future__ import annotations
@@ -43,11 +49,20 @@ TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 CHANNEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
-# A forwarded body opens with this token. It is the same key=value vocabulary
-# the commands print, so a consumer that already splits on the first newline
-# reads the provenance without a new parser. It is also what makes a forward
-# recognisable to the daemon, which refuses to forward one again.
-FORWARD_MARK = "forwarded-from="
+# A forwarded body opens with a control line, and the control line opens with
+# this token. It is deliberately not something prose produces by accident: a
+# leading '#', a slash separated name, and a fixed set of key=value fields that
+# have to parse before the line counts as provenance. The version travels in a
+# field rather than in the token so that a future header shape is still
+# recognised as a forward by today's hop counter.
+FORWARD_MARK = "#sockpost/forward"
+FORWARD_HEADER_VERSION = 1
+
+# key=value where the value is either a JSON string or a bare run of
+# non-space characters. Anchored on nothing: the fields may appear in any
+# order, and an unknown field is carried past without complaint.
+_FORWARD_FIELD_RE = re.compile(
+    r'([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|[^\s"]+)')
 
 # One year. Long enough for any heartbeat, short enough to stay a sane integer.
 MAX_INTERVAL_SECONDS = 365 * 86400
@@ -168,40 +183,104 @@ def quote(text) -> str:
 # forwarding
 # ---------------------------------------------------------------------------
 
-def forward_header(original_sender: str, forwarder: str, source_id: int,
-                   note=None) -> str:
-    """Build the provenance line that opens a forwarded body.
+def forward_header(origin: str, forwarder: str, source_id: int,
+                   created_at: str, hops: int, note=None) -> str:
+    """Build the control line that opens a forwarded body.
 
-    ``forwarded-from=planner via=worker ref=7 note="..."``. The note is quoted
-    the same way command output is, so a note containing a newline cannot push
-    the original body up into the header.
+    ``#sockpost/forward v=1 hops=1 from="planner" via="worker" ref=7
+    at="2026-01-31T18:04:11Z"``, plus ``note="..."`` when one was given.
+
+    Every text value is quoted the way command output is, so nothing a caller
+    supplies can add a field, break the line, or push the original body up
+    into the header. Counts and ids are bare, which is how the rest of this
+    tool prints numbers.
     """
-    header = "%s%s via=%s ref=%d" % (FORWARD_MARK, original_sender, forwarder,
-                                     int(source_id))
+    parts = ["%s v=%d hops=%d" % (FORWARD_MARK, FORWARD_HEADER_VERSION,
+                                  int(hops)),
+             "from=%s" % quote(origin),
+             "via=%s" % quote(forwarder),
+             "ref=%d" % int(source_id),
+             "at=%s" % quote(created_at)]
     if note:
-        header += " note=%s" % quote(note)
-    return header
+        parts.append("note=%s" % quote(note))
+    return " ".join(parts)
 
 
-def forward_body(original_sender: str, forwarder: str, source_id: int,
-                 body: str, note=None) -> str:
-    """The body of a forwarded copy: provenance line, newline, original text.
+def forward_body(text: str, origin: str, forwarder: str, source_id: int,
+                 created_at: str, hops: int, note=None) -> str:
+    """A forwarded copy: one control line, a newline, then the original text.
 
     Provenance travels in the body rather than in a column because a message
     is the only thing this protocol carries end to end: a consumer reading the
     text sees where it came from, with no second lookup and no schema change
     on a queue written by an older version.
+
+    There is exactly one control line at every hop. The header is replaced,
+    not stacked, so the shape of a copy never depends on how far it travelled;
+    the step before this one is still on disk under ``ref``, with its own
+    header, which is how a full path is walked.
     """
     return "%s\n%s" % (
-        forward_header(original_sender, forwarder, source_id, note),
-        "" if body is None else str(body))
+        forward_header(origin, forwarder, source_id, created_at, hops, note),
+        "" if text is None else str(text))
+
+
+def parse_forward_header(line):
+    """Parse a control line into a dict of fields, or ``None``.
+
+    ``None`` means the line is not provenance: either it does not open with
+    the marker, or what follows the marker is not a run of key=value fields.
+    """
+    text = "" if line is None else str(line)
+    if not text.startswith(FORWARD_MARK):
+        return None
+    remainder = text[len(FORWARD_MARK):]
+    if remainder and not remainder.startswith(" "):
+        return None  # "#sockpost/forwarding my thoughts" is prose, not a header
+    fields = {}
+    for key, raw in _FORWARD_FIELD_RE.findall(remainder):
+        if raw.startswith('"'):
+            try:
+                fields[key] = json.loads(raw)
+            except ValueError:
+                return None
+        else:
+            fields[key] = raw
+    return fields
+
+
+def split_forward(body):
+    """Split a body into ``(header fields, original text)``.
+
+    The fields are ``None`` and the text is the whole body when it is not a
+    forwarded copy.
+    """
+    text = "" if body is None else str(body)
+    head, separator, rest = text.partition("\n")
+    fields = parse_forward_header(head)
+    if fields is None:
+        return None, text
+    return fields, rest if separator else ""
 
 
 def is_forward(body) -> bool:
-    """True when a body already carries a provenance line.
+    """True when a body opens with a control line."""
+    return split_forward(body)[0] is not None
 
-    Used to keep a forward terminal. This is a convention, not a guarantee: a
-    sender can type the marker by hand, in which case its message cannot be
-    forwarded. Refusing to copy is the safe side of that mistake.
+
+def forward_hops(body):
+    """How many times a body has already been copied.
+
+    ``0`` for an original. ``None`` when the body carries a control line whose
+    hop count cannot be read, which a caller should treat as "do not copy
+    this": an unreadable counter is exactly what an unbounded relay would need
+    in order to keep going.
     """
-    return str(body or "").startswith(FORWARD_MARK)
+    fields = split_forward(body)[0]
+    if fields is None:
+        return 0
+    try:
+        hops = int(fields.get("hops"))
+    except (TypeError, ValueError):
+        return None
+    return hops if hops >= 0 else None
