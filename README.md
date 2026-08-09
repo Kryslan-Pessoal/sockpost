@@ -43,6 +43,9 @@ you can tell whether the other side actually read them.
   them, so a consumer that crashes or a daemon that restarts loses nothing.
 - **Read receipts.** Delivery and acknowledgement are separate events, so
   `sockpost unread` always answers "what has not been picked up yet".
+- **Forwarding.** `sockpost forward` copies a message that is already in the
+  queue to another channel, with a provenance line naming the original sender.
+  A forward is terminal, so a chain cannot feed on itself.
 - **Pushed, not polled.** Connected channels receive over the open socket; the
   delivery path contains no polling loop.
 - **Redelivery.** A channel that disconnects without acknowledging gets its
@@ -151,6 +154,50 @@ message id=1 from=planner at=2026-01-31T18:04:11Z text="go"
   That is the usual trade for not paying an fsync per message, and it is the
   right trade for coordination traffic. Do not treat this as a ledger.
 
+### Forwarding
+
+`sockpost forward <id> --to <channel>` copies a message that is already in the
+database to another channel, without retyping it:
+
+```sh
+sockpost forward 7 --from worker --to auditor --note "third failure today"
+```
+
+```
+forwarded id=8 src=7 to=auditor
+```
+
+The copy is a new message sent by the forwarder, so it follows the ordinary
+delivery, acknowledgement and redelivery rules. The original is untouched.
+Provenance travels in the body, as one `key=value` line before the original
+text:
+
+```
+forwarded-from=planner via=worker ref=7 note="third failure today"
+the original body, byte for byte
+```
+
+- **The header is in the body, not in a column.** A message is the only thing
+  this protocol carries end to end, so a consumer reading the text already has
+  the provenance, with no second lookup and no schema change on a queue
+  written by an older version.
+- **A forward is terminal.** A body that already starts with `forwarded-from=`
+  cannot be forwarded again; otherwise three agents relaying to each other
+  would grow one message without bound. Forward the original instead: its id
+  is in the `ref=` field.
+- **Any message can be forwarded**, acknowledged or not: rows are never
+  deleted, and forwarding is about the content, not about the place a message
+  holds in a delivery loop.
+- **A message cannot be forwarded to the channel it is already addressed to.**
+  That copy would carry nothing the recipient does not have.
+- **There is no ownership check.** Any local process can already read the whole
+  queue with `sockpost unread`, so refusing to forward somebody else's message
+  would buy no secrecy. What the daemon does instead is record who forwarded
+  what, in the copy and in its log.
+- **Provenance is a convention, not a guarantee.** In line with the security
+  model below, a sender can type the marker by hand. The only consequence is
+  that its own message is then refused for forwarding.
+
 ### Automatic and manual acknowledgement
 
 By default `listen` acknowledges as soon as a message is handed to the process,
@@ -194,6 +241,7 @@ object per line:
 | --- | --- |
 | `sockpost listen --id <ch>` | Stream events for a channel until stopped or evicted. |
 | `sockpost send --from <ch> --to <ch> --text <body>` | Queue a message; prints `queued id=N`. |
+| `sockpost forward <id> --to <ch>` | Copy an existing message to another channel; prints `forwarded id=N`. |
 | `sockpost ack <id> --from <ch>` | Acknowledge a message; idempotent. |
 | `sockpost unread [--id <ch>]` | List queued, unacknowledged messages. |
 | `sockpost status` | Connected channels, wakeups and a liveness probe. |
@@ -308,14 +356,15 @@ path, not a payload.
 
 ## Roadmap
 
-Not in 0.1.0, listed in the order they are likely to be built:
+Not in 0.2.0, listed in the order they are likely to be built:
 
+- Scheduled messages and alarms with snooze.
 - Per channel tokens and an access control list, so a channel id cannot be
   impersonated by another process of the same user.
-- Subscriptions: mirror everything addressed to one channel onto another, for
-  supervision and audit.
+- Subscriptions: a standing rule that forwards everything addressed to one
+  channel onto another, for supervision and audit, instead of one command per
+  message.
 - Named groups with fan out delivery.
-- Scheduled messages and alarms with snooze.
 - A small Python client library, so programs do not have to shell out.
 - Retention: acknowledged messages are kept forever today, so a busy host grows
   its database without bound. A `prune` command with an age policy is needed.
