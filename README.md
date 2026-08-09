@@ -44,8 +44,8 @@ you can tell whether the other side actually read them.
 - **Read receipts.** Delivery and acknowledgement are separate events, so
   `sockpost unread` always answers "what has not been picked up yet".
 - **Forwarding.** `sockpost forward` copies a message that is already in the
-  queue to another channel, with a provenance line naming the original sender.
-  A forward is terminal, so a chain cannot feed on itself.
+  queue to another channel, with a control line naming the original sender and
+  counting the hops. The hop ceiling bounds a relay chain.
 - **Pushed, not polled.** Connected channels receive over the open socket; the
   delivery path contains no polling loop.
 - **Redelivery.** A channel that disconnects without acknowledging gets its
@@ -79,6 +79,22 @@ pip install --user .
 
 There is nothing to configure and no daemon to set up: the first command that
 needs the daemon starts it in the background.
+
+### Upgrading
+
+A running daemon keeps running the code it started with. Installing a new
+release replaces the command, not the process, so a command the new release
+adds reaches a daemon that has never heard of it and fails with a message
+saying so. Stop the daemon once, after upgrading:
+
+```sh
+sockpost stop     # the queue is on disk; nothing is lost
+```
+
+The next command starts the new daemon by itself. `install.sh` does this for
+you, and says so when it did. Unknown *fields* are ignored in both directions,
+so only new commands are affected; `send`, `listen` and `ack` keep working
+across a version gap.
 
 ## Quickstart
 
@@ -156,47 +172,93 @@ message id=1 from=planner at=2026-01-31T18:04:11Z text="go"
 
 ### Forwarding
 
-`sockpost forward <id> --to <channel>` copies a message that is already in the
-database to another channel, without retyping it:
+`sockpost forward <id> --from <channel> --to <channel>` copies a message that
+is already in the database to another channel, without retyping it:
 
 ```sh
 sockpost forward 7 --from worker --to auditor --note "third failure today"
 ```
 
 ```
-forwarded id=8 src=7 to=auditor
+forwarded id=8 src=7 to=auditor hops=1
 ```
 
 The copy is a new message sent by the forwarder, so it follows the ordinary
 delivery, acknowledgement and redelivery rules. The original is untouched.
-Provenance travels in the body, as one `key=value` line before the original
-text:
+Provenance travels in the body, as one control line before the original text:
 
 ```
-forwarded-from=planner via=worker ref=7 note="third failure today"
+#sockpost/forward v=1 hops=1 from="planner" via="worker" ref=7 at="2026-01-31T18:04:11Z" note="third failure today"
 the original body, byte for byte
 ```
+
+| Field | Meaning |
+| --- | --- |
+| `v` | Header format version. |
+| `hops` | How many times this text has been copied. `1` is a first copy. |
+| `from` | The original author, carried unchanged along the whole chain. |
+| `via` | The channel that made *this* copy. |
+| `ref` | The message this copy was made from, one step back. |
+| `at` | When that message was created. |
+| `note` | Optional, from `--note`. It belongs to this hop only. |
 
 - **The header is in the body, not in a column.** A message is the only thing
   this protocol carries end to end, so a consumer reading the text already has
   the provenance, with no second lookup and no schema change on a queue
   written by an older version.
-- **A forward is terminal.** A body that already starts with `forwarded-from=`
-  cannot be forwarded again; otherwise three agents relaying to each other
-  would grow one message without bound. Forward the original instead: its id
-  is in the `ref=` field.
-- **Any message can be forwarded**, acknowledged or not: rows are never
+- **There is exactly one control line, at every hop.** The header is replaced
+  rather than stacked, so a copy has the same shape however far it travelled.
+  The step before it is still on disk under `ref`, with its own header, which
+  is how a full path is walked back to the original.
+- **A chain is bounded, not forbidden.** Every copy costs a hop, and the third
+  one is refused (`SOCKPOST_MAX_FORWARD_HOPS`). That is enough for an agent to
+  relay to a supervisor and the supervisor to an archive, and short enough
+  that two channels forwarding to each other stop instead of feeding on
+  themselves. **It is not flood protection**: nothing here stops a process
+  from sending the same text a thousand times by hand, and nothing tries to.
+- **Any message can be forwarded**, acknowledged or expired: rows are never
   deleted, and forwarding is about the content, not about the place a message
-  holds in a delivery loop.
-- **A message cannot be forwarded to the channel it is already addressed to.**
-  That copy would carry nothing the recipient does not have.
+  holds in a delivery loop. The one refusal is a message *still queued* for
+  the channel you are copying it to, which would then receive it twice.
 - **There is no ownership check.** Any local process can already read the whole
   queue with `sockpost unread`, so refusing to forward somebody else's message
   would buy no secrecy. What the daemon does instead is record who forwarded
   what, in the copy and in its log.
 - **Provenance is a convention, not a guarantee.** In line with the security
-  model below, a sender can type the marker by hand. The only consequence is
-  that its own message is then refused for forwarding.
+  model below, a sender can type a control line by hand and claim any origin.
+  A body whose first line is a header with an unreadable hop count is refused
+  for forwarding, which is the safe side of that mistake.
+
+#### Reading the provenance
+
+The control line is the first line of the body; the original text is
+everything after the first newline. Values are quoted with JSON escaping, so
+a note containing a quote or a newline never breaks the line.
+
+```sh
+sockpost listen --id auditor --json
+```
+
+```json
+{"op": "message", "msg_id": 8, "from": "worker", "text": "#sockpost/forward v=1 hops=1 from=\"planner\" via=\"worker\" ref=7 at=\"2026-01-31T18:04:11Z\"\nbuild failed again", "created_at": "2026-01-31T18:09:02Z"}
+```
+
+```python
+import json, re
+
+FIELD = re.compile(r'(\w+)=("(?:[^"\\]|\\.)*"|\S+)')
+
+event = json.loads(line)
+head, _, original = event["text"].partition("\n")
+if head.startswith("#sockpost/forward"):
+    meta = {k: (json.loads(v) if v.startswith('"') else v)
+            for k, v in FIELD.findall(head)}
+    print(meta["from"], "->", meta["via"], "hops", meta["hops"])
+else:
+    original = event["text"]
+```
+
+From a shell, the same split is `head -1` and `tail -n +2`.
 
 ### Automatic and manual acknowledgement
 
@@ -241,7 +303,7 @@ object per line:
 | --- | --- |
 | `sockpost listen --id <ch>` | Stream events for a channel until stopped or evicted. |
 | `sockpost send --from <ch> --to <ch> --text <body>` | Queue a message; prints `queued id=N`. |
-| `sockpost forward <id> --to <ch>` | Copy an existing message to another channel; prints `forwarded id=N`. |
+| `sockpost forward <id> --from <ch> --to <ch>` | Copy an existing message to another channel; prints `forwarded id=N`. |
 | `sockpost ack <id> --from <ch>` | Acknowledge a message; idempotent. |
 | `sockpost unread [--id <ch>]` | List queued, unacknowledged messages. |
 | `sockpost status` | Connected channels, wakeups and a liveness probe. |
@@ -274,6 +336,7 @@ return `1` when a channel does not answer.
 | `SOCKPOST_ACK_TIMEOUT_OFFLINE` | `60` | Seconds before an absent recipient is reported. |
 | `SOCKPOST_ORPHAN_TTL` | `21600` | Seconds before messages to a channel that never connected expire. |
 | `SOCKPOST_MAX_BODY_BYTES` | `1048576` | Largest accepted message body. |
+| `SOCKPOST_MAX_FORWARD_HOPS` | `3` | How many times one message may be copied onward. |
 | `SOCKPOST_DRAIN_BATCH` | `10` | Messages examined per delivery round, per channel. |
 | `SOCKPOST_WRITE_TIMEOUT` | `5.0` | Seconds the daemon waits on a write before dropping a peer. |
 | `SOCKPOST_ORPHAN_SWEEP_INTERVAL` | `900` | Seconds between expiry sweeps. |
@@ -315,8 +378,10 @@ python3 -m pip install -e ".[dev]"
 
 python3 -m pytest         # unit and end to end tests
 tools/smoke.sh            # framework free end to end check
-tools/leak-check.sh       # pre-publication scan of the tracked files
-tools/leak-check.sh --all # same, including build output and bytecode
+tools/leak-check.sh                    # pre-publication scan of the files
+                                       # git would publish
+tools/leak-check.sh --all              # same, including ignored build output
+tools/leak-check.sh --commits main..HEAD   # authors and commit messages
 ```
 
 Continuous integration runs the tests on Linux and macOS against Python 3.9,

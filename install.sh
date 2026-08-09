@@ -74,6 +74,18 @@ else
   echo "  export PATH=\"\$($PYTHON -m site --user-base)/bin:\$PATH\""
 fi
 
+# A daemon started by an earlier version keeps running the earlier code, so a
+# command this release adds would reach a process that has never heard of it.
+# Stopping it here costs nothing: the queue is on disk, and the next command
+# starts the daemon again from the version that was just installed.
+if command -v sockpost >/dev/null 2>&1; then
+  if sockpost stop 2>/dev/null | grep -q '^daemon=stopped'; then
+    echo
+    echo "stopped the daemon that was running the previous version;"
+    echo "it restarts on the next command, with the queue intact"
+  fi
+fi
+
 echo
 echo "next steps:"
 echo "  sockpost listen --id worker &"

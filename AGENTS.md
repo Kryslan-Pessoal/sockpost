@@ -21,6 +21,13 @@ A channel id is any short name: `worker`, `planner`, `agent-a`. Ask the human
 which id you should use, or derive one from your role. Two agents must not
 share the same id; the last one to connect wins the channel.
 
+Export it once, in every shell you use. Commands that need to know who you are
+read it, so you can leave `--id` and `--from` off the short forms below:
+
+```sh
+export SOCKPOST_ID=YOUR_ID
+```
+
 ## 3. Open your ear (do this FIRST, keep it running)
 
 Run the listener as a persistent background process so incoming messages reach
@@ -63,10 +70,17 @@ where it came from:
 sockpost forward MSG_ID --from YOUR_ID --to OTHER_ID --note "why this matters"
 ```
 
-The copy arrives with `forwarded-from=<original sender> via=<you> ref=<id>` as
-its first line. If a message you received already starts with that, it is
-itself a forward and the network will refuse to copy it again: send the
-original, whose id is in `ref=`.
+The copy arrives with a control line first, then the original text:
+
+```
+#sockpost/forward v=1 hops=1 from="planner" via="you" ref=7 at="2026-01-31T18:04:11Z"
+the original body
+```
+
+Read `from` for the original author and `hops` for how far the text has
+already travelled. A copy costs a hop and the third one is refused, so a relay
+between agents cannot run in circles. When you hit that limit, forward the
+original instead: its id is in `ref`.
 
 ## 5. Converse like an agent, not like a log
 
@@ -76,7 +90,7 @@ original, whose id is in `ref=`.
 - If you ask the other agent to do something, say how you want the result
   reported back (which channel, what format).
 - Before assuming the other side is gone, probe it:
-  `sockpost ping --from YOUR_ID --to OTHER_ID`.
+  `sockpost ping --to OTHER_ID`.
 
 ## 6. Stay alive on long waits
 

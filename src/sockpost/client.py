@@ -152,6 +152,20 @@ def _resolve_id(settings: Settings, value, flag: str):
     return P.validate_channel(candidate)
 
 
+def _translate_unknown_op(error: str, command: str) -> str:
+    """Turn the daemon's ``unknown op`` into the instruction that fixes it.
+
+    A daemon started before an upgrade keeps running the old code, so a
+    command added by the new release reaches a process that has never heard of
+    it. The raw wire error names an operation the user did not type.
+    """
+    if "unknown op" not in error:
+        return error
+    return ("the running daemon is older than this client and does not "
+            "support '%s'; stop it with 'sockpost stop' and it will start "
+            "again on the next command, with the queue intact" % command)
+
+
 def _unreachable_hint(settings: Settings) -> str:
     problem = socket_path_problem(settings.socket_path)
     if problem:
@@ -336,9 +350,10 @@ def cmd_forward(settings: Settings, message_id, from_arg, to_arg, note) -> int:
     if reply is None:
         return _fail("no reply from daemon")
     if reply.get("op") == P.OP_ERROR:
-        return _fail(str(reply.get("error")))
-    print("forwarded id=%s src=%s to=%s"
-          % (reply.get("msg_id"), reply.get("src_id"), recipient))
+        return _fail(_translate_unknown_op(str(reply.get("error")), "forward"))
+    print("forwarded id=%s src=%s to=%s hops=%s"
+          % (reply.get("msg_id"), reply.get("src_id"), recipient,
+             reply.get("hops")))
     return 0
 
 
